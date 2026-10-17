@@ -2,42 +2,41 @@ import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { db } from "@/lib/db";
+import { getJwtSecret } from "@/lib/jwt";
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export async function POST(request: NextRequest) {
   try {
-    const { email, password } = await request.json();
+    const body = await request.json().catch(() => null);
+    const email =
+      typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
+    const password = typeof body?.password === "string" ? body.password : "";
 
-    // 查找用户
-    const result = await db.collection("users").where({
-      email: email,
-    }).get();
+    if (!email || !EMAIL_RE.test(email) || !password || password.length > 128) {
+      return NextResponse.json({ error: "邮箱或密码错误" }, { status: 401 });
+    }
+
+    const result = await db.collection("users").where({ email }).get();
 
     if (result.data.length === 0) {
-      return NextResponse.json(
-        { error: "邮箱或密码错误" },
-        { status: 401 }
-      );
+      // 与密码错误返回相同消息，防止用户枚举
+      return NextResponse.json({ error: "邮箱或密码错误" }, { status: 401 });
     }
 
     const user = result.data[0];
-
-    // 验证密码
     const isValid = await bcrypt.compare(password, user.password);
+
     if (!isValid) {
-      return NextResponse.json(
-        { error: "邮箱或密码错误" },
-        { status: 401 }
-      );
+      return NextResponse.json({ error: "邮箱或密码错误" }, { status: 401 });
     }
 
-    // 生成 JWT token
     const token = jwt.sign(
       { userId: user._id, email: user.email },
-      process.env.JWT_SECRET || "default-secret",
+      getJwtSecret(),
       { expiresIn: "30d" }
     );
 
-    // 返回用户信息和 token
     return NextResponse.json({
       token,
       user: {
@@ -51,7 +50,7 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (error: any) {
-    console.error("登录错误:", error);
+    console.error("[login] 登录错误:", error?.message || error);
     return NextResponse.json(
       { error: "登录失败，请稍后重试" },
       { status: 500 }

@@ -105,7 +105,6 @@ export default function HomePage() {
     localStorage.removeItem("token");
     localStorage.removeItem("user");
     setUser(null);
-    window.location.reload();
   };
 
   return (

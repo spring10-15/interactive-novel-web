@@ -51,11 +51,18 @@ const SUBSCRIPTION_PLANS = [
 
 export default function MembershipPage() {
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState("");
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText("chwng0-1");
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handleCopy = async () => {
+    setCopied(false);
+    setCopyError("");
+    try {
+      await navigator.clipboard.writeText("chwng0-1");
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopyError("复制失败，请手动复制微信号");
+    }
   };
 
   return (
@@ -171,6 +178,9 @@ export default function MembershipPage() {
                 )}
               </button>
             </div>
+            {copyError && (
+              <p role="alert" className="mt-3 text-red-300 text-sm font-heading">{copyError}</p>
+            )}
           </div>
 
           {/* 温馨提示 */}

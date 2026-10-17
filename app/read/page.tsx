@@ -2,9 +2,15 @@
 
 export const dynamic = "force-dynamic";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { db } from "@/lib/db";
+import { callAIChat } from "@/lib/ai-client";
+import { getCurrentUser } from "@/lib/auth";
+import { StoryPlan, StoryState, normalizeStoryPlan, normalizeStoryState } from "@/lib/story-progress";
+import ConfirmModal from "@/components/ConfirmModal";
+import { useToast } from "@/components/Toast";
+import { SkeletonReader } from "@/components/Skeleton";
 
 interface StorySection {
   isTitle?: boolean;
@@ -35,10 +41,13 @@ interface Novel {
   chapters?: any[];
   totalRounds: number;
   currentSectionTitle?: string;
+  storyPlan?: StoryPlan;
+  storyState?: StoryState;
 }
 
 export default function ReadPage() {
   const router = useRouter();
+  const toast = useToast();
   const searchParams = useSearchParams();
   const novelId = searchParams.get("id");
 
@@ -49,6 +58,19 @@ export default function ReadPage() {
   const [isOwner, setIsOwner] = useState(false); // 是否是原作者
   const [actionLoading, setActionLoading] = useState<string | null>(null); // 操作加载状态
   const [user, setUser] = useState<any>(null);
+  // 回退确认弹窗
+  const [rewindConfirm, setRewindConfirm] = useState<{
+    isOpen: boolean;
+    targetRound: number | null;
+  }>({ isOpen: false, targetRound: null });
+  const rewindRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      rewindRef.current?.abort();
+      rewindRef.current = null;
+    };
+  }, [novelId]);
 
   // 检查登录状态
   useEffect(() => {
@@ -62,17 +84,18 @@ export default function ReadPage() {
     localStorage.removeItem("token");
     localStorage.removeItem("user");
     setUser(null);
-    window.location.reload();
+    setIsOwner(false);
   };
 
   // 加载小说数据
   useEffect(() => {
     if (!novelId) {
-      alert("参数错误");
+      toast.show("参数错误", "error");
       router.back();
       return;
     }
     loadNovel();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [novelId]);
 
   const loadNovel = async () => {
@@ -88,6 +111,7 @@ export default function ReadPage() {
 
       // 检查当前用户是否是原作者
       const currentUser = typeof window !== "undefined" ? localStorage.getItem("user") : null;
+      setIsOwner(false);
       if (currentUser) {
         const user = JSON.parse(currentUser);
         if (novelData.userId === user.email || novelData.userId === user._id) {
@@ -96,7 +120,7 @@ export default function ReadPage() {
       }
     } catch (err: any) {
       console.error("加载小说失败:", err);
-      alert("加载失败");
+      toast.show("加载失败", "error");
       router.back();
     } finally {
       setLoading(false);
@@ -111,7 +135,7 @@ export default function ReadPage() {
       novelData.history.forEach((item) => {
         if (item.round !== novelData.currentRound) {
           // 获取该小节的选项
-          let sectionChoices: string[] | undefined;
+          let sectionChoices: string[] | undefined = item.choices;
           if (item.round === 0 && novelData.round0Choices) {
             sectionChoices = [
               `选项1：${novelData.round0Choices.choice1}\n${novelData.round0Choices.choice1_desc || ""}`,
@@ -147,11 +171,19 @@ export default function ReadPage() {
     setStorySections(sections);
   };
 
+  useEffect(() => {
+    const match = /^#section-(\d+)$/.exec(window.location.hash);
+    if (!match || storySections.length === 0) return;
+    const timer = setTimeout(() => document.getElementById(`section-${match[1]}`)?.scrollIntoView({ block: "start" }), 100);
+    return () => clearTimeout(timer);
+  }, [storySections.length]);
+
   // 监听滚动，更新当前查看的节次
   useEffect(() => {
     const handleScroll = () => {
-      const sectionElements = storySections.map((_, index) =>
-        document.getElementById(`section-${index}`)
+      // 使用 section.round 查找元素，与 JSX 中的 id 保持一致
+      const sectionElements = storySections.map((section) =>
+        document.getElementById(`section-${section.round}`)
       );
 
       // 找到当前在视口中的节次
@@ -184,10 +216,9 @@ export default function ReadPage() {
   const handleDerivativeFromRound = (targetRound: number) => {
     if (!novel) return;
 
-    // 找到目标round在history中的索引
     const targetIndex = novel.history.findIndex((h: any) => h.round === targetRound);
     if (targetIndex === -1) {
-      alert("无法找到该章节");
+      toast.show("无法找到该章节", "error");
       return;
     }
 
@@ -206,24 +237,39 @@ ${targetHistory.choice || "无"}
     router.push(`/create?derivative=${encodeURIComponent(derivativePrompt)}`);
   };
 
-  // 从指定round重新创作（仅原作者）
-  const handleRewindToRound = async (targetRound: number) => {
-    if (!novel) return;
+  // 从指定round重新创作（仅原作者）—— 这是破坏性操作，先弹确认
+  const askRewindToRound = (targetRound: number) => {
+    if (rewindRef.current) return;
+    setRewindConfirm({ isOpen: true, targetRound });
+  };
 
-    // 找到目标round在history中的索引
+  const handleRewindToRound = async (targetRound: number) => {
+    if (!novel || rewindRef.current) return;
+    const currentUser = getCurrentUser();
+    if (!currentUser || ![currentUser.email, currentUser.id, currentUser._id].includes(novel.userId)) {
+      toast.show("请登录作品作者账号后再回退", "warning");
+      setActionLoading(null);
+      return;
+    }
+
     const targetIndex = novel.history.findIndex((h: any) => h.round === targetRound);
     if (targetIndex === -1) {
-      alert("无法找到该章节");
+      toast.show("无法找到该章节", "error");
       return;
     }
 
     const targetHistory = novel.history[targetIndex];
+    const controller = new AbortController();
+    rewindRef.current = controller;
 
     // 回滚到目标round的状态
     try {
       // 重新生成选项（如果目标round是0，使用round0Choices）
       let newChoices;
-      if (targetRound === 0 && novel.round0Choices) {
+      if (Array.isArray(targetHistory.choices) && targetHistory.choices.length > 0 &&
+          targetHistory.choices.every((choice: unknown) => typeof choice === "string")) {
+        newChoices = targetHistory.choices;
+      } else if (targetRound === 0 && novel.round0Choices) {
         newChoices = [
           `选项1：${novel.round0Choices.choice1}\n${novel.round0Choices.choice1_desc || ""}`,
           `选项2：${novel.round0Choices.choice2}\n${novel.round0Choices.choice2_desc || ""}`,
@@ -231,11 +277,8 @@ ${targetHistory.choice || "无"}
         ];
       } else {
         // 对于其他round，需要重新生成选项
-        const choicesPrompt = `基于以下剧情，生成3个供用户选择的选项。每个选项15字以内。
-
-剧情：${targetHistory.content}
-
-输出格式（JSON）：
+        const choicesSystemPrompt = `你是一个互动小说创作助手，专门根据剧情生成供读者选择的互动选项。
+请严格按照以下 JSON 格式输出，不要有任何其他文字：
 {
   "choice1": "选项1（15字以内）",
   "choice1_desc": "选项1的详细说明（50字左右）",
@@ -246,55 +289,40 @@ ${targetHistory.choice || "无"}
   "done": true
 }`;
 
-        const API_CONFIG = {
-          apiKey: process.env.NEXT_PUBLIC_SILICONFLOW_API_KEY || "",
-          apiUrl: "https://api.siliconflow.cn/v1/chat/completions",
-          model: "Pro/moonshotai/Kimi-K2.5",
-        };
-
-        const choicesResponse = await fetch(API_CONFIG.apiUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${API_CONFIG.apiKey}`,
-          },
-          body: JSON.stringify({
-            model: API_CONFIG.model,
-            messages: [
-              { role: "system", content: choicesPrompt },
-              { role: "user", content: "" },
-            ],
-            temperature: 0.8,
-            max_tokens: 2500,
-          }),
+        const responseText = await callAIChat({
+          systemPrompt: choicesSystemPrompt,
+          userPrompt: `请根据以下剧情生成3个互动选项，每个选项15字以内：\n\n${targetHistory.content}`,
+          temperature: 0.8,
+          maxTokens: 2500,
+          signal: controller.signal,
         });
-
-        if (choicesResponse.ok) {
-          const data = await choicesResponse.json();
-          const responseText = data.choices[0].message.content;
-          const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-          if (jsonMatch) {
-            const choicesData = JSON.parse(jsonMatch[0]);
-            newChoices = [
-              `选项1：${choicesData.choice1}\n${choicesData.choice1_desc || ""}`,
-              `选项2：${choicesData.choice2}\n${choicesData.choice2_desc || ""}`,
-              `选项3：${choicesData.choice3}\n${choicesData.choice3_desc || ""}`,
-            ];
-          } else {
-            throw new Error("无法解析选项");
-          }
+        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const choicesData = JSON.parse(jsonMatch[0]);
+          newChoices = [
+            `选项1：${choicesData.choice1}\n${choicesData.choice1_desc || ""}`,
+            `选项2：${choicesData.choice2}\n${choicesData.choice2_desc || ""}`,
+            `选项3：${choicesData.choice3}\n${choicesData.choice3_desc || ""}`,
+          ];
         } else {
-          throw new Error("生成选项失败");
+          throw new Error("无法解析选项");
         }
       }
 
+      controller.signal.throwIfAborted();
+      const restoredPlan = normalizeStoryPlan(targetHistory.storyPlan || novel.storyPlan, novel.prompt, targetRound);
+      // 旧长篇回退后重新安排短收尾，不继承远在未来的原截止点。
+      if (restoredPlan.totalSections > 12) restoredPlan.totalSections = Math.max(12, targetRound + 4);
       // 更新数据库：回滚到目标round
       await db.collection("novels").doc(novelId!).update({
         currentContent: targetHistory.content,
         currentChoices: newChoices,
         currentRound: targetRound,
         currentSectionTitle: targetHistory.sectionTitle || "",
+        storyPlan: restoredPlan,
+        storyState: normalizeStoryState(targetHistory.storyState || { summary: String(targetHistory.content).slice(0, 1800) }),
         history: novel.history.slice(0, targetIndex),
+        chapters: novel.chapters?.filter((chapter: any) => chapter.startRound <= targetRound) || [],
         isEnded: false, // 取消结束状态
         endingType: null,
         endingTitle: null,
@@ -302,18 +330,22 @@ ${targetHistory.choice || "无"}
         updatedAt: new Date().toISOString(),
       });
 
-      // 跳转到预览页面继续创作
-      router.push(`/preview?id=${novelId}`);
+      if (!controller.signal.aborted) router.push(`/preview?id=${novelId}`);
     } catch (err: any) {
-      console.error("回退失败:", err);
-      alert(`回退失败：${err.message}`);
+      if (!controller.signal.aborted) {
+        console.error("回退失败:", err);
+        toast.show(`回退失败：${err.message}`, "error");
+      }
+    } finally {
+      if (rewindRef.current === controller) rewindRef.current = null;
+      if (!controller.signal.aborted) setActionLoading(null);
     }
   };
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-white text-xl font-heading">加载中...</div>
+      <div className="min-h-screen bg-black pt-16">
+        <SkeletonReader />
       </div>
     );
   }
@@ -363,6 +395,9 @@ ${targetHistory.choice || "无"}
               <span className="text-white/70 ml-2">· {displaySectionTitle}</span>
             )}
           </div>
+          <button onClick={() => router.push(`/chapters?novelId=${novelId}&mode=read`)} className="text-white/70 hover:text-white font-heading text-sm">
+            目录
+          </button>
           {user ? (
             <button
               onClick={handleLogout}
@@ -412,6 +447,18 @@ ${targetHistory.choice || "无"}
                 {section.content}
               </div>
 
+              {section.isLatest && isOwner && !novel.isEnded && (
+                <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
+                  <p className="text-white/50 text-sm">当前为阅读模式，进入创作后可选择下一步。</p>
+                  <button
+                    onClick={() => router.push(`/preview?id=${novelId}#section-${novel.currentRound}`)}
+                    className="px-4 py-2 rounded-lg bg-white/10 text-white hover:bg-white/20 transition"
+                  >
+                    继续创作 →
+                  </button>
+                </div>
+              )}
+
               {/* 显示该小节的选项 */}
               {section.choices && section.choices.length > 0 && (
                 <div className="mt-6 space-y-3">
@@ -453,10 +500,11 @@ ${targetHistory.choice || "无"}
               {!section.isLatest && !section.isTitle && (
                 <div className="mt-6 pt-4 border-t border-white/10">
                   {isOwner ? (
-                    // 原作者：可以回退重新创作
+                    // 原作者：可以回退重新创作 —— 破坏性操作，先弹确认
                     <button
-                      onClick={() => handleRewindToRound(section.round)}
-                      className="group flex items-center gap-2 text-white/40 hover:text-white/70 text-sm transition font-heading"
+                      onClick={() => askRewindToRound(section.round)}
+                      disabled={actionLoading === `rewind-${section.round}`}
+                      className="group flex items-center gap-2 text-white/40 hover:text-white/70 text-sm transition font-heading disabled:opacity-50"
                     >
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
@@ -492,6 +540,25 @@ ${targetHistory.choice || "无"}
             </div>
           </div>
         )}
+
+        {/* 回退确认弹窗 */}
+        <ConfirmModal
+          isOpen={rewindConfirm.isOpen}
+          title="确认回退"
+          message="从该章节回退会删除之后的所有内容，且不可恢复，确定要继续吗？"
+          type="danger"
+          confirmText="确定回退"
+          cancelText="取消"
+          onCancel={() => setRewindConfirm({ isOpen: false, targetRound: null })}
+          onConfirm={() => {
+            const target = rewindConfirm.targetRound;
+            setRewindConfirm({ isOpen: false, targetRound: null });
+            if (target !== null) {
+              setActionLoading(`rewind-${target}`);
+              handleRewindToRound(target);
+            }
+          }}
+        />
 
         {/* 二创按钮区域 */}
         <div className="mt-12">

@@ -1,18 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { db } from "@/lib/db";
-
-// AI API 配置
-const API_CONFIG = {
-  apiKey: process.env.NEXT_PUBLIC_SILICONFLOW_API_KEY || "",
-  apiUrl: "https://api.siliconflow.cn/v1/chat/completions",
-  imageUrl: "https://api.siliconflow.cn/v1/images/generations",
-  model: "Pro/moonshotai/Kimi-K2.5",
-  imageModel: "black-forest-labs/FLUX.1-schnell",
-};
+import { callAIImage } from "@/lib/ai-client";
+import { SkeletonGrid } from "@/components/Skeleton";
 
 interface Novel {
   _id: string;
@@ -36,6 +29,7 @@ export default function SquarePage() {
   const [loading, setLoading] = useState(true);
   const [generatingCover, setGeneratingCover] = useState<string | null>(null);
   const [user, setUser] = useState<any>(null);
+  const triedCovers = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     // 检查登录状态
@@ -49,73 +43,33 @@ export default function SquarePage() {
     localStorage.removeItem("token");
     localStorage.removeItem("user");
     setUser(null);
-    window.location.reload();
   };
 
   useEffect(() => {
     loadNovels();
-
-    // 定期检查封面图（每30秒检查一次）
-    const checkInterval = setInterval(() => {
-      checkAndGenerateCovers();
-    }, 30000);
-
-    return () => clearInterval(checkInterval);
+    // 移除 30 秒轮询调用付费图像 API —— 这会无限烧成本
   }, []);
 
-  // 检查并生成封面图
-  const checkAndGenerateCovers = async () => {
-    const novelsData = await db.collection("novels").get();
-    const novelsList = novelsData.data as Novel[];
-
-    // 只处理公开的作品
-    const publicNovels = novelsList.filter(novel => novel.isPublic !== false);
-
-    // 为没有封面的作品生成封面（异步，不阻塞显示）
-    publicNovels.forEach((novel) => {
-      if (!novel.coverImage && novel.prompt && novel._id) {
-        generateCoverImage(novel);
-      }
-    });
-  };
   const generateCoverImage = async (novel: Novel) => {
+    if (triedCovers.current.has(novel._id)) return;
+    triedCovers.current.add(novel._id);
     try {
       setGeneratingCover(novel._id);
-
-      // 调用 AI 图片生成 API
-      const response = await fetch(API_CONFIG.imageUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${API_CONFIG.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: API_CONFIG.imageModel,
-          prompt: `A cinematic book cover illustration that captures the atmosphere and world of this story: ${novel.prompt}. Visual storytelling that conveys the mood, theme, and essence through imagery alone. Artistic composition with dramatic lighting and depth. IMPORTANT: No text, no letters, no words, no typography. Pure visual art only. Style: professional book cover, high quality, atmospheric.`,
-          image_size: "1024x1024",
-        }),
+      const imageUrl = await callAIImage({
+        model: "black-forest-labs/FLUX.1-schnell",
+        prompt: `A cinematic book cover illustration that captures the atmosphere and world of this story: ${novel.prompt}. Visual storytelling that conveys the mood, theme, and essence through imagery alone. Artistic composition with dramatic lighting and depth. IMPORTANT: No text, no letters, no words, no typography. Pure visual art only. Style: professional book cover, high quality, atmospheric.`,
+        imageSize: "1024x1024",
       });
-
-      if (!response.ok) {
-        throw new Error("图片生成失败");
-      }
-
-      const data = await response.json();
-      const imageUrl = data.data?.[0]?.url || "";
-
       if (imageUrl) {
-        // 保存到数据库
-        await db.collection("novels").doc(novel._id).update({
-          coverImage: imageUrl,
-        });
-
-        // 更新本地状态
+        await db.collection("novels").doc(novel._id).update({ coverImage: imageUrl });
         setNovels((prev) =>
-          prev.map((n) => (n._id === novel._id ? { ...n, coverImage: imageUrl } : n))
+          prev.map((n) =>
+            n._id === novel._id ? { ...n, coverImage: imageUrl } : n
+          )
         );
       }
     } catch (err: any) {
-      console.error("生成封面失败:", err);
+      console.error("生成封面失败:", err?.message || err);
     } finally {
       setGeneratingCover(null);
     }
@@ -145,8 +99,10 @@ export default function SquarePage() {
   };
 
   const handleNovelClick = (novelId: string) => {
-    // 跳转到阅读页面
-    window.location.href = `/read?id=${novelId}`;
+    const novel = novels.find(item => item._id === novelId);
+    const isOwnUnfinished = user && novel && !novel.isEnded &&
+      (novel.userId === user.email || novel.userId === user._id);
+    router.push(`/${isOwnUnfinished ? "preview" : "read"}?id=${novelId}`);
   };
 
   // 获取当前章节和节次信息
@@ -182,8 +138,11 @@ export default function SquarePage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-white text-xl font-heading">加载中...</div>
+      <div className="min-h-screen py-8 px-4">
+        <div className="max-w-6xl mx-auto">
+          <div className="bg-white/10 backdrop-blur-md rounded-xl p-4 mb-6 border border-white/20 h-14" />
+          <SkeletonGrid count={12} />
+        </div>
       </div>
     );
   }

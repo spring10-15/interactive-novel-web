@@ -1,16 +1,29 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { db, waitForDB } from "@/lib/db";
 
 export default function AdminPage() {
+  const router = useRouter();
   const [status, setStatus] = useState("准备中...");
   const [novelsCount, setNovelsCount] = useState(0);
   const [usersCount, setUsersCount] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [isAllowed, setIsAllowed] = useState(false);
 
   useEffect(() => {
-    loadData();
+    const hostname = window.location.hostname;
+    const allowAdmin =
+      process.env.NODE_ENV === "development" ||
+      hostname === "localhost" ||
+      hostname === "127.0.0.1";
+
+    setIsAllowed(allowAdmin);
+
+    if (allowAdmin) {
+      loadData();
+    }
   }, []);
 
   const loadData = async () => {
@@ -64,7 +77,8 @@ export default function AdminPage() {
   const clearLocalStorage = () => {
     if (!confirm("确定要清除浏览器本地登录信息吗？")) return;
 
-    localStorage.clear();
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
     alert("已清除本地登录信息！");
   };
 
@@ -84,6 +98,25 @@ export default function AdminPage() {
       setLoading(false);
     }
   };
+
+  if (!isAllowed) {
+    return (
+      <div className="min-h-screen flex items-center justify-center px-4 bg-black">
+        <div className="max-w-md w-full bg-white/10 backdrop-blur-md rounded-2xl p-8 border border-white/20 shadow-xl text-center">
+          <h1 className="text-2xl font-bold text-white mb-4 font-heading">页面不可用</h1>
+          <p className="text-white/70 text-sm mb-6 font-heading">
+            管理面板只允许在本地开发环境访问，线上已禁用。
+          </p>
+          <button
+            onClick={() => router.push("/")}
+            className="px-5 py-3 bg-white/10 hover:bg-white/20 text-white rounded-lg transition font-heading"
+          >
+            返回首页
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen py-16 px-4 bg-black">

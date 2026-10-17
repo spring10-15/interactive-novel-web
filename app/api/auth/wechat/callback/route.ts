@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import jwt from "jsonwebtoken";
 import { db } from "@/lib/db";
+import { getJwtSecret } from "@/lib/jwt";
 
 export const dynamic = "force-dynamic";
 
@@ -101,7 +102,7 @@ export async function GET(request: NextRequest) {
     // 第四步：生成 JWT token
     const token = jwt.sign(
       { userId, email: userEmail, wechat: true },
-      process.env.JWT_SECRET || "default-secret",
+      getJwtSecret(),
       { expiresIn: "30d" }
     );
 

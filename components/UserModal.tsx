@@ -1,7 +1,16 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { db } from "@/lib/db";
+
+// 统一把当前 token 加到请求头
+function authHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (typeof window !== "undefined") {
+    const token = window.localStorage.getItem("token");
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+  }
+  return headers;
+}
 
 interface UserModalProps {
   isOpen: boolean;
@@ -61,11 +70,11 @@ export default function UserModal({ isOpen, onClose, user, onUserUpdate }: UserM
           return;
         }
 
-        // 验证旧密码
+        // 验证旧密码（带上 Authorization）
         const verifyRes = await fetch("/api/auth/verify-password", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: user.email, password: oldPassword }),
+          headers: authHeaders(),
+          body: JSON.stringify({ password: oldPassword }),
         });
 
         const verifyData = await verifyRes.json();
@@ -75,18 +84,15 @@ export default function UserModal({ isOpen, onClose, user, onUserUpdate }: UserM
         }
       }
 
-      // 更新用户信息
+      // 更新用户信息（服务端通过 JWT 识别身份，不再接受请求体中的 email）
       const updateData: any = {};
       if (hasNicknameChange) updateData.nickname = nickname;
       if (hasPasswordChange) updateData.password = newPassword;
 
       const res = await fetch("/api/auth/update", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: user.email,
-          ...updateData,
-        }),
+        headers: authHeaders(),
+        body: JSON.stringify(updateData),
       });
 
       const data = await res.json();

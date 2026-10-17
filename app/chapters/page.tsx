@@ -5,6 +5,7 @@ export const dynamic = "force-dynamic";
 import { useState, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { db } from "@/lib/db";
+import { useToast } from "@/components/Toast";
 
 interface Chapter {
   chapterIndex: number;
@@ -29,8 +30,10 @@ interface Novel {
 
 export default function ChaptersPage() {
   const router = useRouter();
+  const toast = useToast();
   const searchParams = useSearchParams();
   const novelId = searchParams.get("novelId");
+  const readingMode = searchParams.get("mode") === "read";
 
   const [novel, setNovel] = useState<Novel | null>(null);
   const [loading, setLoading] = useState(true);
@@ -38,11 +41,12 @@ export default function ChaptersPage() {
 
   useEffect(() => {
     if (!novelId) {
-      alert("参数错误");
+      toast.show("参数错误", "error");
       router.back();
       return;
     }
     loadNovel();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [novelId]);
 
   // 初始化：自动展开当前章节
@@ -66,7 +70,7 @@ export default function ChaptersPage() {
       setNovel(res.data[0] as Novel);
     } catch (err: any) {
       console.error("加载小说失败:", err);
-      alert("加载失败");
+      toast.show("加载失败", "error");
       router.back();
     } finally {
       setLoading(false);
@@ -75,7 +79,7 @@ export default function ChaptersPage() {
 
   const handleSectionClick = (round: number) => {
     // 跳转到预览页面并滚动到指定节次
-    router.push(`/preview?id=${novelId}#section-${round}`);
+    router.push(`/${readingMode ? "read" : "preview"}?id=${novelId}#section-${round}`);
   };
 
   const toggleChapter = (chapterIndex: number) => {

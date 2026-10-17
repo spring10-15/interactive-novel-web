@@ -4,6 +4,7 @@
 
 const isBrowser = typeof window !== "undefined";
 const isProduction = process.env.NODE_ENV === "production";
+const MOCK_STORAGE_KEY = "interactive-novel-writer-mock-db";
 
 // 初始化状态
 let initPromise: Promise<void> | null = null;
@@ -11,7 +12,38 @@ let initError: Error | null = null;
 
 // Mock 数据库实现
 function createMockDB() {
-  const collections: Record<string, any[]> = {};
+  const loadCollections = (): Record<string, any[]> => {
+    if (!isBrowser) {
+      return {};
+    }
+
+    try {
+      const raw = window.localStorage.getItem(MOCK_STORAGE_KEY);
+      if (!raw) {
+        return {};
+      }
+
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (error) {
+      console.warn("⚠️ 读取 Mock 数据失败，已重置:", error);
+      return {};
+    }
+  };
+
+  const collections: Record<string, any[]> = loadCollections();
+
+  const persistCollections = () => {
+    if (!isBrowser) {
+      return;
+    }
+
+    try {
+      window.localStorage.setItem(MOCK_STORAGE_KEY, JSON.stringify(collections));
+    } catch (error) {
+      console.warn("⚠️ 保存 Mock 数据失败:", error);
+    }
+  };
 
   return {
     collection: (name: string) => {
@@ -24,6 +56,7 @@ function createMockDB() {
             const id = `mock_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
             const newItem = { _id: id, ...data };
             collections[name].push(newItem);
+            persistCollections();
             return { id, data: newItem };
           },
           get: async () => ({ data: currentItems }),
@@ -37,12 +70,16 @@ function createMockDB() {
               const index = collections[name].findIndex((i: any) => i._id === id);
               if (index >= 0) {
                 collections[name][index] = { ...collections[name][index], ...updates };
+                persistCollections();
               }
               return { ok: true };
             },
             remove: async () => {
               const index = collections[name].findIndex((i: any) => i._id === id);
-              if (index >= 0) collections[name].splice(index, 1);
+              if (index >= 0) {
+                collections[name].splice(index, 1);
+                persistCollections();
+              }
               return { ok: true };
             },
             set: async (data: any) => {
@@ -52,6 +89,7 @@ function createMockDB() {
               } else {
                 collections[name].push({ _id: id, ...data });
               }
+              persistCollections();
               return { ok: true };
             },
           }),
@@ -75,10 +113,12 @@ function createMockDB() {
           },
           remove: async () => {
             collections[name] = [];
+            persistCollections();
             return { ok: true };
           },
           update: async (data: any) => {
             collections[name] = collections[name].map((item) => ({ ...item, ...data }));
+            persistCollections();
             return { ok: true };
           },
           set: async () => ({ ok: true }),

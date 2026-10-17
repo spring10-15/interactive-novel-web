@@ -46,22 +46,30 @@ const SUBSCRIPTION_PLANS = [
   },
 ];
 
-// 生成简单的 token（用于本地验证）
-function generateToken(userId: string, email: string): string {
-  const payload = {
-    userId,
-    email,
-    exp: Date.now() + 30 * 24 * 60 * 60 * 1000, // 30天
-  };
-  return btoa(JSON.stringify(payload));
-}
+// （已移除未使用的 generateToken；token 由服务端 jsonwebtoken 签发）
 
-// 验证 token（用于本地验证）
+// 验证 token（客户端轻量校验，仅解析不验签 —— 真正鉴权在服务端）
+// 服务端用 jsonwebtoken 签发的标准 JWT 格式：header.payload.signature
+// 客户端无法拿到密钥做完整验签，仅解 payload 检查过期时间
 function verifyToken(token: string): { userId: string; email: string } | null {
   try {
+    const parts = token.split(".");
+    if (parts.length === 3) {
+      // 标准 JWT：base64url 编码的 payload 在第二段
+      // base64url 用 - 和 _ 代替 + 和 /，需还原再 atob
+      const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+      const payload = JSON.parse(atob(base64));
+      // JWT 的 exp 字段是 Unix 秒，Date.now() 是毫秒
+      if (payload.exp && payload.exp * 1000 < Date.now()) {
+        return null; // token 已过期
+      }
+      return { userId: payload.userId, email: payload.email };
+    }
+
+    // 兼容旧版简单 base64 token（非标准 JWT）
     const payload = JSON.parse(atob(token));
     if (payload.exp && payload.exp < Date.now()) {
-      return null; // token 过期
+      return null;
     }
     return { userId: payload.userId, email: payload.email };
   } catch {

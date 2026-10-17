@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { db } from "@/lib/db";
+import { SkeletonGrid } from "@/components/Skeleton";
 
 interface Novel {
   _id: string;
@@ -45,11 +46,23 @@ export default function ProfilePage() {
 
   const loadNovels = async () => {
     try {
-      // 简化版：获取所有作品（后续可以根据用户过滤）
-      const res = await db.collection("novels").orderBy("createdAt", "desc").get();
+      // ⚠️ 按当前用户过滤，不能列出全站作品
+      const userStr =
+        typeof window !== "undefined" ? localStorage.getItem("user") : null;
+      if (!userStr) {
+        setNovels([]);
+        return;
+      }
+      const u = JSON.parse(userStr);
+      const userId = u?.email || u?.id || u?._id;
+      const res = await db
+        .collection("novels")
+        .where({ userId })
+        .orderBy("createdAt", "desc")
+        .get();
       setNovels(res.data as Novel[]);
     } catch (err: any) {
-      console.error("加载作品失败:", err);
+      console.error("加载作品失败:", err?.message || err);
     } finally {
       setLoading(false);
     }
@@ -59,17 +72,6 @@ export default function ProfilePage() {
     localStorage.removeItem("token");
     localStorage.removeItem("user");
     router.push("/login");
-  };
-
-  const getGradient = (index: number) => {
-    const gradients = [
-      "from-purple-500 to-pink-500",
-      "from-blue-500 to-cyan-500",
-      "from-green-500 to-teal-500",
-      "from-orange-500 to-red-500",
-      "from-indigo-500 to-purple-500",
-    ];
-    return gradients[index % gradients.length];
   };
 
   // 获取当前章节和节次信息
@@ -94,8 +96,18 @@ export default function ProfilePage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-white text-xl font-heading">加载中...</div>
+      <div className="min-h-screen py-8 px-4">
+        <div className="max-w-4xl mx-auto">
+          <div className="bg-white/10 backdrop-blur-md rounded-xl p-6 mb-6 border border-white/20 h-36 animate-pulse" />
+          <div className="grid grid-cols-2 gap-4 mb-6">
+            <div className="bg-white/10 rounded-xl h-14 animate-pulse" />
+            <div className="bg-white/5 rounded-xl h-14 animate-pulse" />
+          </div>
+          <div className="bg-white/10 rounded-xl p-6 border border-white/20">
+            <div className="h-6 bg-white/10 rounded w-24 mb-4 animate-pulse" />
+            <SkeletonGrid count={6} />
+          </div>
+        </div>
       </div>
     );
   }

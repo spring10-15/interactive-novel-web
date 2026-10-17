@@ -2,12 +2,18 @@
 
 AI 驱动的互动小说创作平台
 
+> **已归档 · 2026-10-17**：用户认可当前整体版本并要求停止变动。固定受保护体验入口：[novel-archive-20261017.vercel.app](https://novel-archive-20261017.vercel.app/)，访问需获授权的Vercel账号。云部署READY、81项测试和26组流程通过；本轮未完成平台保护内的线上创作验收。冻结、恢复包、现有限界及品牌站普通链接接入方式见[归档说明](archive/2026-10-17/README.md)。下文保留开发阶段历史，不再作为持续开发计划。
+
+> 2026-10-15 核验：模型已统一为 `deepseek-ai/DeepSeek-V4-Flash`。当前账号存储、作品权限和计费额度尚未形成生产闭环；下方功能清单表示已有界面与代码，不代表公网多用户验收。详见 `对抗性审查报告_2026-10-15.md`。
+> 同日后续：已加入3章12节计划、持久剧情状态、推进审稿和最终结局保存；73项自动化测试、15组核心流程、真实普通续写与种子终局生成通过。全功能结果与未通项见[验收记录](全功能实测与剧情推进验收_2026-10-15.md)，含封面上游403与登录/资料阻断；未完成新版连续12节的真实模型全程验收。
+> 2026-10-16 补修：非终局节奏意见改为下一节指导，避免有效正文反复被抹掉；草稿与已保存节数分开，附带事件要求当节兑现。81项测试、26组核心流程通过，最终保存策略真实混合选项从3→12连续9次保存并刷新确认完结；种子起步及后续提示词变更的边界见[最新修复记录](剧情推进与节数回退修复_2026-10-16.md)。
+
 ## 技术栈
 
 - **前端**: Next.js 14 + React 18 + TypeScript
 - **样式**: Tailwind CSS
 - **后端**: 微信云开发（Web SDK）
-- **AI**: SiliconFlow API（Kimi K2.5）
+- **AI**: SiliconFlow API（DeepSeek V4 Flash）
 - **部署**: Vercel
 
 ## 快速开始
@@ -164,7 +170,7 @@ const response = await fetch("https://api.siliconflow.cn/v1/chat/completions", {
     Authorization: `Bearer ${process.env.SILICONFLOW_API_KEY}`,
   },
   body: JSON.stringify({
-    model: "Pro/moonshotai/Kimi-K2.5",
+    model: "deepseek-ai/DeepSeek-V4-Flash",
     messages: [
       { role: "system", content: "你是一个互动小说作家" },
       { role: "user", content: "生成一个故事" },
@@ -185,7 +191,7 @@ A: 使用 `@cloudbase/js-sdk` 包，通过环境 ID 初始化。
 A: 在微信云开发安全设置中添加网页端域名。
 
 **Q: Vercel 部署后环境变量不生效？**
-A: 确保环境变量名前缀是 `NEXT_PUBLIC_`，否则在客户端无法访问。
+A: 在部署平台设置变量后重新部署。`SILICONFLOW_API_KEY` 和 `JWT_SECRET` 只供服务端使用，禁止加 `NEXT_PUBLIC_`；只有云环境 ID 等公开配置使用该前缀。
 
 ## 许可证
 

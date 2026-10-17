@@ -1,19 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
+import { randomBytes } from "crypto";
 
-// 微信开放平台配置
-// 等健哥有了域名和 AppID 后，填到这里
 const WECHAT_CONFIG = {
-  appId: process.env.WECHAT_APP_ID || "", // 微信开放平台 AppID
-  appSecret: process.env.WECHAT_APP_SECRET || "", // 微信开放平台 AppSecret
-  redirectUri: process.env.WECHAT_REDIRECT_URI || "", // 回调地址，比如：https://your-domain.com/api/auth/wechat/callback
+  appId: process.env.WECHAT_APP_ID || "",
+  appSecret: process.env.WECHAT_APP_SECRET || "",
+  redirectUri: process.env.WECHAT_REDIRECT_URI || "",
 };
 
-// 微信 OAuth2 授权地址
 const WECHAT_OAUTH_URL = "https://open.weixin.qq.com/connect/qrconnect";
 
-export async function GET(request: NextRequest) {
+export async function GET(_request: NextRequest) {
   try {
-    // 检查配置
     if (!WECHAT_CONFIG.appId || !WECHAT_CONFIG.redirectUri) {
       return NextResponse.json(
         { error: "微信登录配置未完成，请联系管理员" },
@@ -21,21 +18,28 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // 生成随机 state（防止 CSRF 攻击）
-    const state = Math.random().toString(36).substring(2, 15);
+    // 使用加密安全随机数生成 state，防 CSRF
+    const state = randomBytes(16).toString("hex");
 
-    // 构建微信授权 URL
     const authUrl = new URL(WECHAT_OAUTH_URL);
     authUrl.searchParams.set("appid", WECHAT_CONFIG.appId);
     authUrl.searchParams.set("redirect_uri", WECHAT_CONFIG.redirectUri);
     authUrl.searchParams.set("response_type", "code");
-    authUrl.searchParams.set("scope", "snsapi_login"); // 网站应用固定值
+    authUrl.searchParams.set("scope", "snsapi_login");
     authUrl.searchParams.set("state", state);
 
-    // 重定向到微信扫码页面
-    return NextResponse.redirect(authUrl.toString());
+    const response = NextResponse.redirect(authUrl.toString());
+    // 把 state 存到 HttpOnly cookie，让 callback 路由比对（防 CSRF）
+    response.cookies.set("wechat_oauth_state", state, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 60 * 10, // 10 分钟
+      path: "/",
+    });
+    return response;
   } catch (error: any) {
-    console.error("微信登录初始化失败:", error);
+    console.error("[wechat] 微信登录初始化失败:", error?.message || error);
     return NextResponse.json(
       { error: "微信登录初始化失败" },
       { status: 500 }

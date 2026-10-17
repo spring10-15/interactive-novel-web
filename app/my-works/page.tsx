@@ -1,9 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { db } from "@/lib/db";
 import ConfirmModal from "@/components/ConfirmModal";
+import { callAIImage } from "@/lib/ai-client";
+import { useToast } from "@/components/Toast";
+import { SkeletonGrid } from "@/components/Skeleton";
 
 interface Novel {
   _id: string;
@@ -23,17 +26,13 @@ interface Novel {
 
 export default function MyWorksPage() {
   const router = useRouter();
+  const toast = useToast();
   const [novels, setNovels] = useState<Novel[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [generatingCover, setGeneratingCover] = useState<string | null>(null);
-
-  // AI API 配置
-  const API_CONFIG = {
-    apiKey: "sk-azxwywpiafbflnwuawdbplejhcrjschklqlythcaumqwcfqj",
-    imageUrl: "https://api.siliconflow.cn/v1/images/generations",
-    imageModel: "Qwen/Qwen-Image-Edit-2509",
-  };
+  // 已尝试过生成封面的小说 id（避免重复触发 / 死循环）
+  const triedCovers = useRef<Set<string>>(new Set());
 
   // 确认弹窗状态
   const [confirmModal, setConfirmModal] = useState({
@@ -46,75 +45,60 @@ export default function MyWorksPage() {
 
   useEffect(() => {
     loadNovels();
-
-    // 定期检查封面图（每30秒检查一次）
-    const checkInterval = setInterval(() => {
-      checkAndGenerateCovers();
-    }, 30000);
-
-    return () => clearInterval(checkInterval);
+    // 不再每 30 秒轮询调用付费图像 API（成本灾难）
+    // 封面在 loadNovels 首屏后按需生成一次
   }, []);
 
-  // 生成封面图
   const generateCoverImage = async (novel: Novel) => {
+    if (triedCovers.current.has(novel._id)) return;
+    triedCovers.current.add(novel._id);
     try {
       setGeneratingCover(novel._id);
-
-      // 调用 AI 图片生成 API
-      const response = await fetch(API_CONFIG.imageUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${API_CONFIG.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: API_CONFIG.imageModel,
-          prompt: `A cinematic book cover illustration that captures the atmosphere and world of this story: ${novel.prompt}. Visual storytelling that conveys the mood, theme, and essence through imagery alone. Artistic composition with dramatic lighting and depth. IMPORTANT: No text, no letters, no words, no typography. Pure visual art only. Style: professional book cover, high quality, atmospheric.`,
-          image_size: "1024x1024",
-        }),
+      const imageUrl = await callAIImage({
+        model: "black-forest-labs/FLUX.1-schnell",
+        prompt: `A cinematic book cover illustration that captures the atmosphere and world of this story: ${novel.prompt}. Visual storytelling that conveys the mood, theme, and essence through imagery alone. Artistic composition with dramatic lighting and depth. IMPORTANT: No text, no letters, no words, no typography. Pure visual art only. Style: professional book cover, high quality, atmospheric.`,
+        imageSize: "1024x1024",
       });
-
-      if (!response.ok) {
-        throw new Error("图片生成失败");
-      }
-
-      const data = await response.json();
-      const imageUrl = data.data?.[0]?.url || "";
-
       if (imageUrl) {
-        // 保存到数据库
-        await db.collection("novels").doc(novel._id).update({
-          coverImage: imageUrl,
-        });
-
-        // 更新本地状态
+        await db.collection("novels").doc(novel._id).update({ coverImage: imageUrl });
         setNovels((prev) =>
           prev.map((n) => (n._id === novel._id ? { ...n, coverImage: imageUrl } : n))
         );
       }
     } catch (err: any) {
-      console.error("生成封面失败:", err);
+      console.error("生成封面失败:", err?.message || err);
     } finally {
       setGeneratingCover(null);
     }
   };
 
-  // 检查并生成封面图
-  const checkAndGenerateCovers = async () => {
-    // 为没有封面的作品生成封面（异步，不阻塞显示）
-    novels.forEach((novel) => {
-      if (!novel.coverImage && novel.prompt && !generatingCover) {
-        generateCoverImage(novel);
-      }
-    });
-  };
-
   const loadNovels = async () => {
     try {
-      const res = await db.collection("novels").orderBy("createdAt", "desc").get();
-      setNovels(res.data as Novel[]);
+      // ⚠️ 必须按当前登录用户过滤，否则别人的作品也会出现在这里
+      const userStr =
+        typeof window !== "undefined" ? localStorage.getItem("user") : null;
+      if (!userStr) {
+        router.push("/login");
+        return;
+      }
+      const u = JSON.parse(userStr);
+      const userId = u?.email || u?.id || u?._id;
+
+      const res = await db
+        .collection("novels")
+        .where({ userId })
+        .orderBy("createdAt", "desc")
+        .get();
+      const list = res.data as Novel[];
+      setNovels(list);
+
+      // 首屏后逐个为缺失封面的作品异步补图（每个最多尝试一次）
+      list.forEach((n) => {
+        if (!n.coverImage && n.prompt) generateCoverImage(n);
+      });
     } catch (err: any) {
-      console.error("加载作品失败:", err);
+      console.error("加载作品失败:", err?.message || err);
+      toast.show("加载作品失败", "error");
     } finally {
       setLoading(false);
     }
@@ -133,7 +117,7 @@ export default function MyWorksPage() {
       message: `确定要将此作品设置为${newStatus ? "公开" : "私密"}吗？`,
       type: "warning",
       onConfirm: async () => {
-        setConfirmModal({ ...confirmModal, isOpen: false });
+        setConfirmModal(prev => ({ ...prev, isOpen: false }));
 
         try {
           setActionLoading(novelId);
@@ -148,7 +132,7 @@ export default function MyWorksPage() {
           );
         } catch (err: any) {
           console.error("更新状态失败:", err);
-          alert("操作失败，请重试");
+          toast.show("操作失败，请重试", "error");
         } finally {
           setActionLoading(null);
         }
@@ -174,7 +158,7 @@ export default function MyWorksPage() {
           message: "删除后作品将永久消失，无法找回！确定要删除吗？",
           type: "danger",
           onConfirm: async () => {
-            setConfirmModal({ ...confirmModal, isOpen: false });
+            setConfirmModal(prev => ({ ...prev, isOpen: false }));
 
             try {
               setActionLoading(novelId);
@@ -185,7 +169,7 @@ export default function MyWorksPage() {
               setNovels((prev) => prev.filter((n) => n._id !== novelId));
             } catch (err: any) {
               console.error("删除失败:", err);
-              alert("删除失败，请重试");
+              toast.show("删除失败，请重试", "error");
             } finally {
               setActionLoading(null);
             }
@@ -217,8 +201,11 @@ export default function MyWorksPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-white text-xl font-heading">加载中...</div>
+      <div className="min-h-screen py-8 px-4">
+        <div className="max-w-6xl mx-auto">
+          <div className="bg-white/10 backdrop-blur-md rounded-xl p-4 mb-6 border border-white/20 h-14" />
+          <SkeletonGrid count={8} />
+        </div>
       </div>
     );
   }
@@ -344,7 +331,7 @@ export default function MyWorksPage() {
         message={confirmModal.message}
         type={confirmModal.type}
         onConfirm={confirmModal.onConfirm}
-        onCancel={() => setConfirmModal({ ...confirmModal, isOpen: false })}
+        onCancel={() => setConfirmModal(prev => ({ ...prev, isOpen: false }))}
       />
     </div>
   );
